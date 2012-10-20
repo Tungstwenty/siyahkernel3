@@ -24,6 +24,10 @@
 #define MALI_DVFS_STEPS 4
 #endif
 
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+#define NR_MALI_HISTOGRAM_BUCKETS 10
+#endif
+
 #if !USING_MALI_PMM
 /* @brief System power up/down cores that can be passed into mali_platform_powerdown/up() */
 #define MALI_PLATFORM_SYSTEM  0

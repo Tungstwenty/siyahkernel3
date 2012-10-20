@@ -15,6 +15,7 @@
 #include <linux/miscdevice.h>
 
 #include "gpu_clock_control.h"
+#include "mali_platform.h"
 
 #define GPU_MAX_CLOCK 800
 #define GPU_MIN_CLOCK 10
@@ -52,6 +53,22 @@ static ssize_t gpu_clock_show(struct device *dev, struct device_attribute *attr,
 		);
 }
 
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+extern u64 mali_histogram_data[MALI_DVFS_STEPS][NR_MALI_HISTOGRAM_BUCKETS];
+
+static void reset_mali_histogram(void)
+{
+	int i, j;
+	// unsigned long flags;
+
+	// spin_lock_irqsave(&mali_histogram_lock, flags);
+	for (i = 0; i < MALI_DVFS_STEPS; i++)
+		for (j = 0; j < NR_MALI_HISTOGRAM_BUCKETS; j++)
+			mali_histogram_data[i][j] = 0;
+	// spin_unlock_irqrestore(&mali_histogram_lock, flags);
+}
+#endif
+
 unsigned int g[6];
 
 static ssize_t gpu_clock_store(struct device *dev, struct device_attribute *attr, const char *buf,
@@ -84,6 +101,7 @@ static ssize_t gpu_clock_store(struct device *dev, struct device_attribute *attr
 			mali_dvfs[i].clock=g[i];
 		}
 	}
+	reset_mali_histogram();
 	return count;	
 }
 
@@ -110,12 +128,64 @@ static ssize_t gpu_staycount_store(struct device *dev, struct device_attribute *
 	return count;	
 }
 
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+static ssize_t gpu_histogram_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int i, j;
+	char *s;
+
+	s = buf;
+
+	// Output header
+	s += sprintf(s, "Step");
+	for (i = 0; i < NR_MALI_HISTOGRAM_BUCKETS; i++) {
+		unsigned int start_load, end_load;
+		start_load = i * (100 / NR_MALI_HISTOGRAM_BUCKETS);
+		end_load = (i + 1) * (100 / NR_MALI_HISTOGRAM_BUCKETS);
+		if (i == NR_MALI_HISTOGRAM_BUCKETS - 1)
+			end_load = 100;
+		s += sprintf(s, "\t%u%%-%u%%", start_load, end_load);
+	}
+	s += sprintf(s, "\tTotal\n");
+
+	// Output data table
+	for (i = 0; i < MALI_DVFS_STEPS; i++) {
+		u64 total_hits = 0;
+		s += sprintf(s, "Step%d:", i);
+		for (j = 0; j < NR_MALI_HISTOGRAM_BUCKETS; j++) {
+			u64 bucket_hits = mali_histogram_data[i][j];
+			s += sprintf(s, "\t%llu", bucket_hits);
+			total_hits += bucket_hits;
+		}
+		s += sprintf(s, "\t%llu\n", total_hits);
+	}
+	return s - buf;
+}
+
+static ssize_t gpu_histogram_store(struct device *dev,
+                                   struct device_attribute *attr,
+                                   const char *buf, size_t count) {
+	if (!strncmp(buf, "reset", 5)) {
+		reset_mali_histogram();
+		return count;
+	} else {
+		return -EINVAL;
+	}
+}
+#endif
+
 static DEVICE_ATTR(gpu_control, S_IRUGO | S_IWUGO, gpu_clock_show, gpu_clock_store);
 static DEVICE_ATTR(gpu_staycount, S_IRUGO | S_IWUGO, gpu_staycount_show, gpu_staycount_store);
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+static DEVICE_ATTR(gpu_load_histogram, S_IRUGO | S_IWUSR | S_IWGRP, gpu_histogram_show, gpu_histogram_store);
+#endif
 
 static struct attribute *gpu_clock_control_attributes[] = {
 	&dev_attr_gpu_control.attr,
 	&dev_attr_gpu_staycount.attr,
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+	&dev_attr_gpu_load_histogram.attr,
+#endif
 	NULL
 };
 

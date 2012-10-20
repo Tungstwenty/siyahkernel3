@@ -136,6 +136,10 @@ static unsigned int asv_3d_volt_8_table[ASV_8_LEVEL][MALI_DVFS_STEPS] = {
 };
 #endif
 
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+u64 mali_histogram_data[MALI_DVFS_STEPS][NR_MALI_HISTOGRAM_BUCKETS] = { { 0 } };
+#endif
+
 /*dvfs status*/
 mali_dvfs_currentstatus maliDvfsStatus;
 int mali_dvfs_control=0;
@@ -355,6 +359,19 @@ static unsigned int decideNextStatus(unsigned int utilization)
 	return level;
 }
 
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+static void report_mali_load(u32 load, unsigned int step)
+{
+	unsigned int bucket;
+
+	bucket = ((load * 100) / 255) / (100 / NR_MALI_HISTOGRAM_BUCKETS);
+	if (bucket > NR_MALI_HISTOGRAM_BUCKETS - 1)
+		bucket = NR_MALI_HISTOGRAM_BUCKETS - 1;
+
+	mali_histogram_data[step][bucket]++;
+}
+#endif
+
 static mali_bool mali_dvfs_status(u32 utilization)
 {
 	unsigned int nextStatus = 0;
@@ -363,6 +380,10 @@ static mali_bool mali_dvfs_status(u32 utilization)
 	static int stay_count = 0;
 #ifdef EXYNOS4_ASV_ENABLED
 	static mali_bool asv_applied = MALI_FALSE;
+#endif
+
+#ifdef CONFIG_MALI_STEP_HISTOGRAM
+	report_mali_load(utilization, maliDvfsStatus.currentStep);
 #endif
 
 	MALI_DEBUG_PRINT(1, ("> mali_dvfs_status: %d \n",utilization));
