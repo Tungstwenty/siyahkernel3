@@ -30,6 +30,10 @@
 #include <linux/mutex.h>
 #include <linux/syscore_ops.h>
 
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#endif
 #include <trace/events/power.h>
 
 /**
@@ -100,6 +104,19 @@ static void unlock_policy_rwsem_write(int cpu)
 	up_write(&per_cpu(cpu_policy_rwsem, policy_cpu));
 }
 
+
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+static DEFINE_SPINLOCK(histogram_lock);
+
+#define NR_HISTOGRAM_BUCKETS 10
+struct histogram_for_freq {
+	int freq;
+	u64 hits[NR_CPUS][NR_HISTOGRAM_BUCKETS];
+	u64 total_hits[NR_CPUS];
+};
+static struct histogram_for_freq *histogram_data; // One entry per frequency
+static int histogram_freq_count;
+#endif
 
 /* internal prototypes */
 static int __cpufreq_governor(struct cpufreq_policy *policy,
@@ -176,6 +193,40 @@ void cpufreq_cpu_put(struct cpufreq_policy *data)
 }
 EXPORT_SYMBOL_GPL(cpufreq_cpu_put);
 
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+void cpufreq_report_load(unsigned int load, unsigned int cpu, unsigned int freq)
+{
+	unsigned int bucket;
+	unsigned int i, freq_pos;
+	unsigned long flags;
+
+	spin_lock_irqsave(&histogram_lock, flags);
+
+	if (!histogram_data) {
+		spin_unlock_irqrestore(&histogram_lock, flags);
+		return;
+	}
+
+	freq_pos = histogram_freq_count - 1;
+	for (i = 0; i < histogram_freq_count; i++) {
+		if (histogram_data[i].freq == freq ||
+		    histogram_data[i].freq < 0) {
+			freq_pos = i;
+			break;
+		}
+	}
+
+	bucket = load / (100 / NR_HISTOGRAM_BUCKETS);
+	if (bucket > NR_HISTOGRAM_BUCKETS - 1)
+		bucket = NR_HISTOGRAM_BUCKETS - 1;
+
+	histogram_data[freq_pos].hits[cpu][bucket]++;
+	histogram_data[freq_pos].total_hits[cpu]++;
+
+	spin_unlock_irqrestore(&histogram_lock, flags);
+}
+EXPORT_SYMBOL_GPL(cpufreq_report_load);
+#endif
 
 /*********************************************************************
  *            EXTERNALLY AFFECTING FREQUENCY CHANGES                 *
@@ -1755,6 +1806,9 @@ static int __cpufreq_set_policy(struct cpufreq_policy *data,
 				ret = -EINVAL;
 				goto error_out;
 			}
+			// Governor changed, update/initialize the histogram data
+			cpufreq_update_histogram_frequencies(policy);
+
 			/* might be a policy change, too, so fall through */
 		}
 		pr_debug("governor: change or update limits\n");
@@ -1853,6 +1907,140 @@ static struct notifier_block __refdata cpufreq_cpu_notifier = {
     .notifier_call = cpufreq_cpu_callback,
 };
 
+
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+static void *histogram_seq_start(struct seq_file *f, loff_t *pos)
+{
+	return (*pos < histogram_freq_count) ? pos : NULL;
+}
+
+static void *histogram_seq_next(struct seq_file *f, void *v, loff_t *pos)
+{
+	(*pos)++;
+	if (*pos >= histogram_freq_count)
+		return NULL;
+	return pos;
+}
+
+static void histogram_seq_stop(struct seq_file *f, void *v)
+{
+	/* Nothing to do */
+}
+
+static int histogram_seq_show(struct seq_file *f, void *v)
+{
+	int i, j;
+	int entry = *(int *) v;
+	unsigned long flags;
+
+	if (entry == 0) {
+		// Display the header
+		seq_printf(f, "Freq\tCPU");
+		for (j = 0; j < NR_HISTOGRAM_BUCKETS; j++) {
+			unsigned int start_load, end_load;
+			start_load = j * (100 / NR_HISTOGRAM_BUCKETS);
+			end_load = (j + 1) * (100 / NR_HISTOGRAM_BUCKETS);
+			if (j == NR_HISTOGRAM_BUCKETS - 1)
+				end_load = 100;
+			seq_printf(f, "\t%u%%-%u%%", start_load, end_load);
+		}
+		seq_printf(f, "\tTotal\n");
+	}
+
+	spin_lock_irqsave(&histogram_lock, flags);
+	if (!histogram_data || entry >= histogram_freq_count) {
+		// The structure has probably changed in the meantime
+		spin_unlock_irqrestore(&histogram_lock, flags);
+		return 0;
+	}
+
+	for (i = 0; i < NR_CPUS; i++) {
+		if (histogram_data[entry].freq >= 0)
+			seq_printf(f, "%u", histogram_data[entry].freq);
+		else
+			seq_printf(f, "Unknown");
+
+		seq_printf(f, "\t%d", i);
+
+		for (j = 0; j < NR_HISTOGRAM_BUCKETS; j++)
+			seq_printf(f, "\t%llu", histogram_data[entry].hits[i][j]);
+		seq_printf(f, "\t%llu\n", histogram_data[entry].total_hits[i]);
+	}
+	spin_unlock_irqrestore(&histogram_lock, flags);
+	return 0;
+}
+
+static struct seq_operations histogram_seq_ops = {
+	.start = histogram_seq_start,
+	.next  = histogram_seq_next,
+	.stop  = histogram_seq_stop,
+	.show  = histogram_seq_show
+};
+
+static int histogram_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &histogram_seq_ops);
+};
+
+static const struct file_operations histogram_fops = {
+	.owner = THIS_MODULE,
+	.open = histogram_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
+
+void cpufreq_update_histogram_frequencies(struct cpufreq_policy *policy)
+{
+	unsigned int i, j;
+	struct cpufreq_frequency_table *freqs_table;
+	unsigned int alloc_size;
+	unsigned int cpu = policy->cpu;
+	unsigned long flags;
+
+	spin_lock_irqsave(&histogram_lock, flags);
+	if (!histogram_data) {
+		kfree(histogram_data);
+		histogram_data = NULL;
+	}
+
+	histogram_freq_count = 0;
+
+	freqs_table = cpufreq_frequency_get_table(cpu);
+	if (freqs_table) {
+		for (i = 0; freqs_table[i].frequency != CPUFREQ_TABLE_END; i++) {
+			unsigned int freq = freqs_table[i].frequency;
+			if (freq == CPUFREQ_ENTRY_INVALID)
+				continue;
+			histogram_freq_count++;
+		}
+	}
+	histogram_freq_count++;
+
+	alloc_size = histogram_freq_count * sizeof(*histogram_data);
+	histogram_data = kzalloc(alloc_size, GFP_KERNEL);
+	if (!histogram_data) {
+		spin_unlock_irqrestore(&histogram_lock, flags);
+		return;
+	}
+
+	if (freqs_table) {
+		for (i = 0, j = 0; freqs_table[i].frequency != CPUFREQ_TABLE_END; i++) {
+			unsigned int freq = freqs_table[i].frequency;
+			if (freq == CPUFREQ_ENTRY_INVALID)
+				continue;
+			histogram_data[j++].freq = freq;
+		}
+	}
+	histogram_data[histogram_freq_count - 1].freq = -1; // Entry for any unknown freqs
+
+	spin_unlock_irqrestore(&histogram_lock, flags);
+}
+EXPORT_SYMBOL(cpufreq_update_histogram_frequencies);
+#endif
+
+
 /*********************************************************************
  *               REGISTER / UNREGISTER CPUFREQ DRIVER                *
  *********************************************************************/
@@ -1913,6 +2101,11 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 		}
 	}
 
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+	if (!proc_create("cpu_load_histogram", S_IRUGO, NULL, &histogram_fops))
+		goto err_sysdev_unreg;
+#endif
+
 	register_hotcpu_notifier(&cpufreq_cpu_notifier);
 	pr_debug("driver %s up and running\n", driver_data->name);
 
@@ -1945,6 +2138,10 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver)
 		return -EINVAL;
 
 	pr_debug("unregistering driver %s\n", driver->name);
+
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+	remove_proc_entry("cpu_load_histogram", NULL);
+#endif
 
 	sysdev_driver_unregister(&cpu_sysdev_class, &cpufreq_sysdev_driver);
 	unregister_hotcpu_notifier(&cpufreq_cpu_notifier);

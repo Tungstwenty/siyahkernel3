@@ -841,6 +841,7 @@ define_one_global_rw(dvfs_debug);
 define_one_global_rw(up_threshold_at_min_freq);
 define_one_global_rw(freq_for_responsiveness);
 
+
 static struct attribute *dbs_attributes[] = {
 	&sampling_rate_min.attr,
 	&sampling_rate.attr,
@@ -1197,6 +1198,8 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		load = 100 * (wall_time - idle_time) / wall_time;
 		hotplug_history->usage[num_hist].load[j] = load;
 
+		cpufreq_report_load(load, j, policy->cur);
+
 		freq_avg = __cpufreq_driver_getavg(policy, j);
 		if (freq_avg <= 0)
 			freq_avg = policy->cur;
@@ -1413,6 +1416,10 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		if ((!cpu_online(cpu)) || (!policy->cur))
 			return -EINVAL;
 
+#ifdef CONFIG_CPU_FREQ_GOV_PEGASUSQ_HISTOGRAM
+		histogram_create_table(policy);
+#endif
+
 		dbs_tuners_ins.max_freq = policy->max;
 		dbs_tuners_ins.min_freq = policy->min;
 		hotplug_history->num_hist = 0;
@@ -1509,6 +1516,7 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 	}
 	return 0;
 }
+
 
 static int __init cpufreq_gov_dbs_init(void)
 {

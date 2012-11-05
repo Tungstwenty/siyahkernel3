@@ -17,6 +17,15 @@ config CPU_FREQ
 
 if CPU_FREQ
 
+config CPU_FREQ_HISTOGRAM
+	bool "Collect and expose load histogram"
+	default n
+	help
+	  This will collect a histogram of the several load measurements
+	  and make it available in a proc entry.
+
+	  If in doubt, say N.
+
 config CPU_FREQ_TABLE
 	tristate
 

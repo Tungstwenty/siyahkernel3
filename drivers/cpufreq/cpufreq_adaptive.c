@@ -512,6 +512,8 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 		load = 100 * (wall_time - idle_time) / wall_time;
 
+		cpufreq_report_load(load, j, policy->cur);
+
 		if (load > longterm_load)
 			longterm_load = load;
 

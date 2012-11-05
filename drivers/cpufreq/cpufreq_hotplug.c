@@ -460,6 +460,8 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		/* load is the percentage of time not spent in idle */
 		load = 100 * (wall_time - idle_time) / wall_time;
 
+		cpufreq_report_load(load, j, policy->cur);
+
 		/* keep track of combined load across all CPUs */
 		total_load += load;
 

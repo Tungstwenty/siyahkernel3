@@ -303,6 +303,8 @@ static void cpufreq_smartass_timer(unsigned long cpu)
 	else
 		cpu_load = 100 * (unsigned int)(delta_time - delta_idle) / (unsigned int)delta_time;
 
+	cpufreq_report_load(cpu_load, cpu, policy->cur);
+
 	dprintk(SMARTASS_DEBUG_LOAD,"smartassT @ %d: load %d (delta_time %llu)\n",
 		old_freq,cpu_load,delta_time);
 

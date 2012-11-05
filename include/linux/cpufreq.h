@@ -334,6 +334,19 @@ static inline unsigned int cpufreq_quick_get(unsigned int cpu)
 }
 #endif
 
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+void cpufreq_update_histogram_frequencies(struct cpufreq_policy *policy);
+#endif
+
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+void cpufreq_report_load(unsigned int load, unsigned int cpu, unsigned int freq);
+#else
+static inline void cpufreq_report_load(unsigned int load, unsigned int cpu, unsigned int freq)
+{
+	return;
+}
+#endif
+
 #ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_FLEXRATE
 extern int cpufreq_ondemand_flexrate_request(unsigned int rate_ms,
 					     unsigned int duration);

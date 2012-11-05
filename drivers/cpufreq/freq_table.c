@@ -206,7 +206,13 @@ static ssize_t store_available_freqs(struct cpufreq_policy *policy,
 		     const char *buf, size_t count)
 {
 #if defined(CONFIG_CPU_EXYNOS4210)
-	return store_available_freqs_exynos4210(policy, buf, count);
+	size_t ret;
+
+	ret = store_available_freqs_exynos4210(policy, buf, count);
+#ifdef CONFIG_CPU_FREQ_HISTOGRAM
+	cpufreq_update_histogram_frequencies(policy);
+#endif
+	return ret;
 #else
 	return count;
 #endif
